@@ -119,9 +119,8 @@ uint32_t MQTT_COMMAND = 0;
 char commands_topic[50];
 char commands_data[50];
 esp_mqtt_client_handle_t client = NULL;
-#define BROKER_URI "mqtt://192.168.121.178:1883"
+#define BROKER_URI "mqtt://192.168.36.178:1883"
 #define MQTT_PUB_GATWAY "esp32/gatway"
-#define MQTT_SUB_GATWAY "esp32/gatwaycommand"
 #define MQTT_PUB_NODE1 "esp32/node1"
 #define MQTT_PUB_NODE2 "esp32/node2"
 #define MQTT_SUB_NODE1_LED "esp32/node1/led"
@@ -137,7 +136,7 @@ char NODE2_Characteristic[100];
 
 // mqttpub
 char PUB_DATA_NODES[50];
-char PUB_DATA_GATWAY[10];
+char PUB_DATA_GATWAY[12];
 uint8_t TOPIC_;
 
 // FreeRTOS
@@ -197,8 +196,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         esp_mqtt_client_subscribe(client, MQTT_SUB_NODE1_P, 0);
         esp_mqtt_client_subscribe(client, MQTT_SUB_NODE2_LED, 0);
         esp_mqtt_client_subscribe(client, MQTT_SUB_NODE2_P, 0);
-        esp_mqtt_client_subscribe(client, MQTT_SUB_GATWAY, 0);
-        sprintf(ESP32_Characteristic, "3|ESP S3|ARM Cortex M4 32-bit|240 MHz|512 KB|384 KB|%d|250 Kbps|0 db|52|%d|2 Byte", NUMBER_OF_SLAVE, DELAY);
+        sprintf(ESP32_Characteristic, "3|ESP S3|ESP32-S3-WROOM-1|240 MHz|512 KB|384 KB|52|250 Kbps|0 db|2 Byte|%d|%d", NUMBER_OF_SLAVE, DELAY);
         sprintf(NODE1_Characteristic, "3|STM32F446RE|ARM Cortex M4 32-bit|180 MHz|512 KB|128 KB|3|100|Low");
         sprintf(NODE2_Characteristic, "3|STM32F446RE|ARM Cortex M4 32-bit|180 MHz|512 KB|128 KB|3|100|Low");
         esp_mqtt_client_publish(client, MQTT_PUB_GATWAY, &(ESP32_Characteristic), 0, 0, 0);
@@ -430,23 +428,29 @@ bool ShootTheMessage(int num, char *myTxData)
     // Buffer to store the acknowledgment payload
     char AckPayload[32];
 
-    for (int i = 0; i < stop; i++)
+    int star = esp_timer_get_time() / 1000;
+    int end = star;
+    printf("ReceiveAndAcknowledgeData\n");
+    while (end - star < 50)
     {
-        // Load the message into the NRF24's transmit buffer
         if (NRF24_write(myTxData, 32))
         {
             // Message sent successfully, now wait for acknowledgment
             NRF24_read(AckPayload, 32);
+            printf("ShootTheMessage\n");
             if (strlen(AckPayload) != 0)
             {
                 // Acknowledgment received successfully
+                printf("Acknowledgment received successfully\n");
                 messageDelivered = true;
                 break;
             }
+            messageDelivered = true;
 
             // Short delay before retrying
             vTaskDelay(10 / portTICK_PERIOD_MS);
         }
+        end = esp_timer_get_time() / 1000;
     }
 
     return messageDelivered;
@@ -462,20 +466,30 @@ bool ShootTheMessage(int num, char *myTxData)
 bool ReceiveAndAcknowledgeData(void)
 {
     // Flag to track data reception success
-    bool dataReceived = NRF24_available();
+    bool dataReceived = false;
+
+    int star = esp_timer_get_time() / 1000;
+    int end = star;
+    printf("ReceiveAndAcknowledgeData\n");
+    while (end - star < 50)
+    {
+        if (NRF24_available())
+        {
+            // Read the received data into the buffer
+            NRF24_read(myRxData, 32);
+
+            // Immediately send an acknowledgement payload on pipe 1
+            NRF24_write_AckPayload(1, myAckPayload, 32);
+
+            // Increment received data counter
+            DataCount++;
+            dataReceived = true;
+            break;
+        }
+        end = esp_timer_get_time() / 1000;
+    }
 
     // Check if data is available on the NRF24 module
-    if (dataReceived)
-    {
-        // Read the received data into the buffer
-        NRF24_read(myRxData, 32);
-
-        // Immediately send an acknowledgement payload on pipe 1
-        NRF24_write_AckPayload(1, myAckPayload, 32);
-
-        // Increment received data counter
-        DataCount++;
-    }
 
     return dataReceived;
 }
@@ -530,7 +544,7 @@ void AnlyseThePayload(uint8_t *rxPayload, uint8_t length)
     sprintf(PUB_DATA_NODES, "1|%.2f|%.2f|%.2f|%.2f|%d|%d|%d|", tCelsius, tFahrenheit, RH, V, R, G, B);
 
     // Print the extracted and calculated data
-    // printf("1|%d|%.2f|%.2f|%.2f|%.2f|%d|%d|%d|\n\r", num, tCelsius, tFahrenheit, RH, V, R, G, B);
+    printf("1|%.2f|%.2f|%.2f|%.2f|%d|%d|%d|\n\r", tCelsius, tFahrenheit, RH, V, R, G, B);
 }
 
 /**
@@ -622,32 +636,17 @@ void loop(uint8_t num, char *myTxData)
         // Switch NRF24 to receive mode and listen for acknowledgment
         nrf24_config_mode(RX_MODE, num);
 
-        // Loop for a limited time waiting for acknowledgment
-        for (int i = 0; i < 5; i++)
+        if (ReceiveAndAcknowledgeData())
         {
-            // Check if data is received successfully
-            if (ReceiveAndAcknowledgeData())
-            {
-                // Analyze and display data
-                AnlyseThePayload(myRxData, 32);
+            // Analyze and display data
+            AnlyseThePayload(myRxData, 32);
 
-                // Reset connection error flag
-                errorFlag = false;
-
-                // Exit the inner loop (acknowledgment received)
-                break;
-            }
-            else
-            {
-                // Short delay before retrying
-                vTaskDelay(10 / portTICK_PERIOD_MS);
-            }
-
-            // Reached the wait limit without acknowledgment
-            if (i == 4)
-            {
-                errorFlag = true;
-            }
+            // Reset connection error flag
+            errorFlag = false;
+        }
+        else
+        {
+            errorFlag = true;
         }
     }
     else
@@ -655,10 +654,7 @@ void loop(uint8_t num, char *myTxData)
         // Set connection error flag
         errorFlag = true;
     }
-
-    // the current data count and total request count
-    sprintf(PUB_DATA_GATWAY, "2|%d|%d", DataCount, TotalRequest);
-
+    TotalRequest++;
     // Print the current data count and total request count
     printf("2|%d|%d\n\r", DataCount, TotalRequest);
 
@@ -669,120 +665,66 @@ void loop(uint8_t num, char *myTxData)
     // vTaskDelay(DELAY / portTICK_PERIOD_MS);
 }
 
-/**
- * @brief NodeComm - Function to handle communication with nodes.
- * 
- * This function iterates over a predefined number of slave nodes and sends commands
- * to each one. If the current node matches the node specified for a command, it sends
- * a specific command. Otherwise, it sends a general command. After sending the command,
- * it queues the data for further processing and delays for a specified period before
- * moving to the next node.
- * 
- * Globals:
- * - NUMBER_OF_SLAVE: Total number of slave nodes to communicate with.
- * - Node_num_commmand: The index of the node that should receive a specific command.
- * - selvesCommans: Command data for the specified node.
- * - myTxData: General command data for other nodes.
- * - TotalRequest: Counter for the total number of requests made.
- * - DATA_GATWAY: Queue handle for gateway data.
- * - PUB_DATA_GATWAY: Data to be published to the gateway queue.
- * - DATA_NODES: Queue handle for node data.
- * - PUB_DATA_NODES: Data to be published to the node queue.
- */
 void NodeComm(void)
 {
-    for (size_t i = 0; i < NUMBER_OF_SLAVE; i++) {
-        if (i == Node_num_commmand) {
-            // Send specific command to the targeted node
+    for (size_t i = 0; i < NUMBER_OF_SLAVE; i++)
+    {
+        NRF24_REST(DATA_RATE, POWER_DB, DELAY_US);
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        if (i == Node_num_commmand)
+        {
             loop(i, selvesCommans);
-            printf("slave %d : %s\n", i, selvesCommans);
-            // Reset the command node number to avoid repeated commands
+            printf("salve %d : %s\n", i, selvesCommans);
             Node_num_commmand = NUMBER_OF_SLAVE + 1;
-        } else {
-            // Send general command to all other nodes
-            loop(i, myTxData);
-            printf("slave %d : %s\n", i, myTxData);
         }
-        // Increment the total number of requests
-        TotalRequest++;
-        // Queue data for the gateway and nodes
+        else
+        {
+            loop(i, myTxData);
+            printf("salve %d : %s\n", i, myTxData);
+        }
+        // the current data count and total request count
+        sprintf(PUB_DATA_GATWAY, "2|97|95|96");
         xQueueSend(DATA_GATWAY, (void *)PUB_DATA_GATWAY, (TickType_t)0);
         xQueueSend(DATA_NODES, (void *)PUB_DATA_NODES, (TickType_t)0);
-        // Delay to allow for task scheduling
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 }
 
-
 // -------------this patr of code for Tasks------------- //
-/**
- * @brief vTaskHandleNodeComm - FreeRTOS task to handle node communication.
- * 
- * This task runs indefinitely, checking for MQTT connectivity and, if connected, 
- * performs node communication by calling the NodeComm function. After communication,
- * it triggers a semaphore to indicate that nodes' data is ready for MQTT publishing.
- * 
- * @param pvParameters - Pointer to the parameters passed to the task (not used in this implementation).
- * 
- * Globals:
- * - MQTT_CONNECTED: Flag indicating the MQTT connection status.
- * - MQTT_PUB_TREGER_NODES: Semaphore handle to trigger MQTT publishing for nodes.
- */
 void vTaskHandleNodeComm(void *pvParameters)
 {
-    // Loop indefinitely for communication
-    while (1) {
-        if (MQTT_CONNECTED) {
-            // Perform node communication
+    // // Loop indefinitely for communication
+    while (1)
+    {
+        if (MQTT_CONNECTED)
+        {
             NodeComm();
-            // Give semaphore to trigger MQTT publishing for nodes
             xSemaphoreGive(MQTT_PUB_TREGER_NODES);
         }
     }
 }
 
-
-/**
- * @brief vTaskPublisherData - FreeRTOS task to publish data via MQTT.
- * 
- * This task runs indefinitely, checking for MQTT connectivity and publishing data
- * received from queues to MQTT topics. It first handles data from the gateway queue,
- * and then waits for a semaphore to trigger the publishing of nodes' data.
- * 
- * @param pvParameters - Pointer to the parameters passed to the task (not used in this implementation).
- * 
- * Globals:
- * - MQTT_CONNECTED: Flag indicating the MQTT connection status.
- * - DATA_GATWAY: Queue handle for gateway data.
- * - MQTT_PUB_GATWAY: MQTT topic for publishing gateway data.
- * - MQTT_PUB_TREGER_NODES: Semaphore handle to trigger MQTT publishing for nodes.
- * - NUMBER_OF_SLAVE: Total number of slave nodes.
- * - DATA_NODES: Queue handle for node data.
- * - topics: Array of MQTT topics for each node.
- * - client: MQTT client handle.
- */
 void vTaskPublisherData(void *pvParameters)
 {
-    // Buffer to hold received data
-    char rxbuff[50];
 
-    // Loop indefinitely for publishing data
-    while (1) {
-        if (MQTT_CONNECTED) {
-            // Check and publish data from the gateway queue
-            if (xQueueReceive(DATA_GATWAY, &(rxbuff), (TickType_t)5)) {
+    while (1)
+    {
+        char rxbuff[50];
+        if (MQTT_CONNECTED)
+        {
+            if (xQueueReceive(DATA_GATWAY, &(rxbuff), (TickType_t)5))
+            {
                 esp_mqtt_client_publish(client, MQTT_PUB_GATWAY, &(rxbuff), 0, 0, 0);
-                // Uncomment for debugging
                 // printf("GATWAY rxbuff : %s Time : %lld\n", rxbuff, esp_timer_get_time() / 1000);
             }
 
-            // Wait for the semaphore to trigger publishing nodes' data
-            if (xSemaphoreTake(MQTT_PUB_TREGER_NODES, portMAX_DELAY) == pdTRUE) {
-                for (size_t i = 0; i < NUMBER_OF_SLAVE; i++) {
-                    // Check and publish data from the node queue
-                    if (xQueueReceive(DATA_NODES, &(rxbuff), (TickType_t)5)) {
+            if (xSemaphoreTake(MQTT_PUB_TREGER_NODES, portMAX_DELAY) == pdTRUE)
+            {
+                for (size_t i = 0; i < NUMBER_OF_SLAVE; i++)
+                {
+                    if (xQueueReceive(DATA_NODES, &(rxbuff), (TickType_t)5))
+                    {
                         esp_mqtt_client_publish(client, topics[i], &(rxbuff), 0, 0, 0);
-
+                        // printf("NODE rxbuff : %s Time :  %lld\n", rxbuff, esp_timer_get_time() / 1000);
                     }
                 }
             }
@@ -790,170 +732,117 @@ void vTaskPublisherData(void *pvParameters)
     }
 }
 
-/**
- * @brief vTaskSubscriberCommand - FreeRTOS task to handle incoming MQTT commands.
- * 
- * This task runs indefinitely, checking for MQTT connectivity and command availability.
- * When a command is received, it processes the command based on the topic and updates
- * the corresponding node's command. It handles various commands for different nodes
- * including LED and power commands.
- * 
- * @param pvParameters - Pointer to the parameters passed to the task (not used in this implementation).
- * 
- * Globals:
- * - MQTT_CONNECTED: Flag indicating the MQTT connection status.
- * - MQTT_COMMAND: Flag indicating if a new MQTT command is available.
- * - commands_topic: Topic of the received MQTT command.
- * - commands_data: Data of the received MQTT command.
- * - MQTT_SUB_GATWAY: MQTT topic for gateway subscription.
- * - MQTT_SUB_NODE1_LED: MQTT topic for Node 1 LED subscription.
- * - MQTT_SUB_NODE1_P: MQTT topic for Node 1 power subscription.
- * - MQTT_SUB_NODE2_LED: MQTT topic for Node 2 LED subscription.
- * - MQTT_SUB_NODE2_P: MQTT topic for Node 2 power subscription.
- * - Node_num_commmand: Index of the node to receive the command.
- * - selvesCommans: Command data for the specified node.
- * - LED_ON: Command to turn the LED on.
- * - LED_OFF: Command to turn the LED off.
- * - POWER_1: Command to set power level 1.
- * - POWER_2: Command to set power level 2.
- * - POWER_3: Command to set power level 3.
- */
 void vTaskSubscriberCommand(void *pvParameters)
 {
-    // Loop indefinitely to process incoming commands
-    while (1) {
-        if (MQTT_CONNECTED && MQTT_COMMAND) {
-            // Uncomment for debugging
+    while (1)
+    {
+
+        if (MQTT_CONNECTED && MQTT_COMMAND)
+        {
             // printf("Topic : %s\n", commands_topic);
             // printf("Data  : %s\n", commands_data);
 
-            if (strcmp(commands_topic, MQTT_SUB_GATWAY) == 0) {
-                printf("MQTT_SUB_GATWAY \n");
-            } else if (strcmp(commands_topic, MQTT_SUB_NODE1_LED) == 0) {
+            if (strcmp(commands_topic, MQTT_SUB_NODE1_LED) == 0)
+            {
                 Node_num_commmand = 0;
-                if (strcmp(commands_data, "1") == 0) {
+                if (strcmp(commands_data, "1") == 0)
+                {
                     sprintf(selvesCommans, LED_ON);
-                    // Uncomment for debugging
-                    // printf("%s Node 1\n", selvesCommans);
-                } else {
-                    sprintf(selvesCommans, LED_OFF);
-                    // Uncomment for debugging
                     // printf("%s Node 1\n", selvesCommans);
                 }
-            } else if (strcmp(commands_topic, MQTT_SUB_NODE1_P) == 0) {
+                else
+                {
+                    sprintf(selvesCommans, LED_OFF);
+                    // printf("%s Node 1\n", selvesCommans);
+                }
+            }
+            else if (strcmp(commands_topic, MQTT_SUB_NODE1_P) == 0)
+            {
                 Node_num_commmand = 0;
-                if (strcmp(commands_data, "0") == 0) {
+                if (strcmp(commands_data, "0") == 0)
+                {
                     sprintf(selvesCommans, POWER_1);
-                    // Uncomment for debugging
-                    // printf("%s Node 1\n", selvesCommans);
-                } else if (strcmp(commands_data, "1") == 0) {
-                    sprintf(selvesCommans, POWER_2);
-                    // Uncomment for debugging
-                    // printf("%s Node 1\n", selvesCommans);
-                } else {
-                    sprintf(selvesCommans, POWER_3);
-                    // Uncomment for debugging
                     // printf("%s Node 1\n", selvesCommans);
                 }
-            } else if (strcmp(commands_topic, MQTT_SUB_NODE2_LED) == 0) {
+                else if (strcmp(commands_data, "1") == 0)
+                {
+                    sprintf(selvesCommans, POWER_2);
+                    // printf("%s Node 1\n", selvesCommans);
+                }
+                else
+                {
+                    sprintf(selvesCommans, POWER_3);
+                    // printf("%s Node 1\n", selvesCommans);
+                }
+            }
+            else if (strcmp(commands_topic, MQTT_SUB_NODE2_LED) == 0)
+            {
                 Node_num_commmand = 1;
-                if (strcmp(commands_data, "1") == 0) {
+                if (strcmp(commands_data, "1") == 0)
+                {
                     sprintf(selvesCommans, LED_ON);
-                    // Uncomment for debugging
                     // printf("%s Node 2\n", selvesCommans);
-                } else {
+                }
+                else
+                {
                     sprintf(selvesCommans, LED_OFF);
-                    // Uncomment for debugging
                     // printf("%s Node 2\n", selvesCommans);
                 }
-            } else if (strcmp(commands_topic, MQTT_SUB_NODE2_P) == 0) {
+            }
+            else if (strcmp(commands_topic, MQTT_SUB_NODE2_P) == 0)
+            {
                 Node_num_commmand = 1;
-                if (strcmp(commands_data, "0") == 0) {
+                if (strcmp(commands_data, "0") == 0)
+                {
                     sprintf(selvesCommans, POWER_1);
-                    // Uncomment for debugging
-                    // printf("%s Node 2\n", selvesCommans);
-                } else if (strcmp(commands_data, "1") == 0) {
-                    sprintf(selvesCommans, POWER_2);
-                    // Uncomment for debugging
-                    // printf("%s Node 2\n", selvesCommans);
-                } else {
-                    sprintf(selvesCommans, POWER_3);
-                    // Uncomment for debugging
                     // printf("%s Node 2\n", selvesCommans);
                 }
-            } else {
+                else if (strcmp(commands_data, "1") == 0)
+                {
+                    sprintf(selvesCommans, POWER_2);
+                    // printf("%s Node 2\n", selvesCommans);
+                }
+                else
+                {
+                    sprintf(selvesCommans, POWER_3);
+                    // printf("%s Node 2\n", selvesCommans);
+                }
+            }
+            else
+            {
                 return;
             }
         }
-        // Reset the command flag
         MQTT_COMMAND = 0;
-        // Delay to allow for task scheduling
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
 }
 
-
-/**
- * @brief main - Main application entry point.
- * 
- * This function initializes the NVS and WiFi, creates the necessary queues and semaphore,
- * and starts the FreeRTOS tasks for handling node communication, publishing data, and 
- * subscribing to commands.
- * 
- * Globals:
- * - DATA_NODES: Queue handle for node data.
- * - DATA_GATWAY: Queue handle for gateway data.
- * - MQTT_PUB_TREGER_NODES: Semaphore handle to trigger MQTT publishing for nodes.
- * 
- * Functions:
- * - nvs_flash_init: Initializes the NVS flash.
- * - wifi_init: Initializes WiFi.
- * - setup: Additional setup for the application.
- * - xQueueCreate: Creates a queue.
- * - xSemaphoreCreateBinary: Creates a binary semaphore.
- * - xTaskCreate: Creates a FreeRTOS task.
- */
-
 void app_main(void)
 {
-    // Initialize NVS flash storage
     nvs_flash_init();
-
-    // Initialize WiFi
     wifi_init();
-
-    // Create queue for node data with space for NUMBER_OF_SLAVE items, each holding a 50-char array
-    DATA_NODES = xQueueCreate(NUMBER_OF_SLAVE, sizeof(char) * 50);
-
-    // Create queue for gateway data with space for 1 item, holding a 10-char array
+    DATA_NODES = xQueueCreate(NUMBER_OF_SLAVE, sizeof(char) * 50); // Create queue in app_main
     DATA_GATWAY = xQueueCreate(1, sizeof(char) * 10);
-
-    // Check if queue creation was successful
-    if (DATA_NODES == NULL || DATA_GATWAY == NULL) {
+    // Create queue in app_main
+    if (DATA_NODES == NULL && DATA_GATWAY == NULL)
+    {
         printf("Failed to create queue\n");
         return;
     }
 
-    // Create binary semaphore for triggering MQTT publishing for nodes
     MQTT_PUB_TREGER_NODES = xSemaphoreCreateBinary();
-
-    // Check if semaphore creation was successful
-    if (MQTT_PUB_TREGER_NODES == NULL) {
+    if (MQTT_PUB_TREGER_NODES == NULL)
+    {
         printf("Failed to create semaphore\n");
         return;
     }
-
-    // Additional setup for the application (setup function not defined in the provided code)
     setup(0);
-
-    // Create task for handling node communication
-    xTaskCreate(vTaskHandleNodeComm, "Task 1", 2096, NULL, 1, myTask1Handle);
-
-    // Create task for publishing data
+    // Create Task 1 with a stack size of 2048 bytes, no parameters, and priority 1
+    xTaskCreate(vTaskHandleNodeComm, "Task 1", 4096, NULL, 1, myTask1Handle);
+    // Create Task 2 with a stack size of 2048 bytes, no parameters, and priority 1
     xTaskCreate(vTaskPublisherData, "Task 2", 2096, NULL, 1, myTask2Handle);
-
-    // Create task for subscribing to commands
-    xTaskCreate(vTaskSubscriberCommand, "Task 3", 2096, NULL, 1, myTask3Handle);
+    // Create Task 3 with a stack size of 2048 bytes, no parameters, and priority 1
+    xTaskCreate(vTaskSubscriberCommand, "Task 3", 2048, NULL, 1, myTask3Handle);
 }
-
 
